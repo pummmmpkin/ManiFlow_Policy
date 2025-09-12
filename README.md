@@ -4,7 +4,7 @@
   |
   <a href="https://arxiv.org/pdf/2509.01819"><strong>Paper</strong></a>
   |
-  <a href="Place Holder"><strong>Twitter</strong></a> | <a href="Place Holder"><strong>YouTube</strong></a>
+  <a href="https://x.com/GeYan_21/status/1963638893649301678"><strong>Twitter</strong></a> | <a href="Place Holder"><strong>YouTube</strong></a>
 
   <a href="https://geyan21.github.io/">Ge Yan</a>, 
   <a href="https://jiyuezh.github.io/">Jiyue Zhu*</a>, 
@@ -56,6 +56,7 @@ ManiFlow is a visuomotor imitation learning policy for general robot manipulatio
 
 * 🐳 **Docker containerization** for simplified environment setup
 * 🔄 **RoboTwin 2.0 support** with enhanced task diversity and domain randomization
+* 🤖 **Real-Time Execution** with [RTC](https://www.pi.website/research/real_time_chunking) and varied temporal ensembling
 
 ---
 
