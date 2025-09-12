@@ -36,6 +36,3 @@ dataset:
   seed: 42
   val_ratio: 0.02
   max_train_episodes: 90
-  use_img: true
-  use_depth: false
-  use_point_cloud: false
