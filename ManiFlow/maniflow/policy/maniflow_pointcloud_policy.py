@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import torch
 import torch.nn.functional as F
 from einops import reduce
@@ -9,6 +9,7 @@ from maniflow.policy.base_policy import BasePolicy
 from maniflow.common.pytorch_util import dict_apply
 from maniflow.common.model_util import print_params
 from maniflow.model.vision_3d.pointnet_extractor import DP3Encoder
+from maniflow.model.vision.act3d_encoder import Act3dEncoder
 from maniflow.model.diffusion.ditx import DiTX
 from maniflow.model.common.sample_util import *
 
@@ -73,6 +74,9 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
                                                     pointnet_type=pointnet_type,
                                                     downsample_points=downsample_points,
                                                     )
+        elif encoder_type == 'act3d':
+            obs_encoder = Act3dEncoder(**pointcloud_encoder_cfg, encoder_output_dim=encoder_output_dim, 
+                                       observation_space=obs_dict)
         else:
             raise ValueError(f"Unsupported encoder type {encoder_type}")
         cprint(f"[Encoder_type] {encoder_type}", "yellow")
@@ -174,7 +178,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
     
 
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def predict_action(self, obs_dict: Dict[str, torch.Tensor], lang_cond: Optional[str] = None) -> Dict[str, torch.Tensor]:
         """
         obs_dict: must include "obs" key
         result: must include "action" key
@@ -197,9 +201,9 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
 
         # handle different ways of passing observation
         vis_cond = None
-        lang_cond = None
+        # lang_cond = None
 
-        if self.language_conditioned:
+        if self.language_conditioned and lang_cond is None:
             # assume nobs has 'task_name' key for language condition
             lang_cond = nobs.get('task_name', None)
             assert lang_cond is not None, "Language goal is required"
@@ -490,7 +494,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         lang_cond = None
         ema_model = ema_model
 
-        if self.language_conditioned:
+        if self.language_conditioned:            
             # we assume language condition is passed as 'task_name'
             lang_cond = nobs.get('task_name', None)
             assert lang_cond is not None, "Language goal is required"
