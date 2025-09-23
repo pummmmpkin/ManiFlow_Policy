@@ -36,6 +36,7 @@ from termcolor import cprint
 import shutil
 import time
 import threading
+import subprocess
 from hydra.core.hydra_config import HydraConfig
 from maniflow.policy.maniflow_pointcloud_policy import ManiFlowTransformerPointcloudPolicy
 from maniflow.dataset.base_dataset import BaseDataset
@@ -46,6 +47,18 @@ from maniflow.model.diffusion.ema_model import EMAModel
 from maniflow.model.common.lr_scheduler import get_scheduler
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+def upload_file(local_folder):
+    base = "gs://cmu-gpucloud-chenyuah/ManiFlow"
+    folder_name = os.path.basename(local_folder.rstrip("/"))
+    destination = f"{base}/{folder_name}"
+    
+    try:
+        cmd = ["gcloud", "storage", "rsync", "-r", local_folder, destination]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(f"[Success] Uploaded: {local_folder} -> {destination}")
+    except subprocess.CalledProcessError as e:
+        print(f"[Failure] Failed to upload {local_folder}: {e.stderr.strip()}")
 
 class TrainManiFlowDexWorkspace:
     include_keys = ['global_step', 'epoch']
@@ -364,11 +377,14 @@ class TrainManiFlowDexWorkspace:
                 
             # checkpoint
             if (self.epoch % cfg.training.checkpoint_every) == 0 and cfg.checkpoint.save_ckpt:
+                self.save_checkpoint(tag=f'epoch-{self.epoch}')
                 # checkpointing
                 if cfg.checkpoint.save_last_ckpt:
                     self.save_checkpoint()
                 if cfg.checkpoint.save_last_snapshot:
                     self.save_snapshot()
+                upload_file(self.output_dir)
+                print(f"Epoch {self.epoch} uploaded.")
 
                 # sanitize metric names
                 metric_dict = dict()
