@@ -7,9 +7,9 @@ task_name: ${task.name}
 shape_meta: ${task.shape_meta}
 exp_name: "maniflow"
 
-horizon: 64
+horizon: 16
 n_obs_steps: 2
-n_action_steps: 32
+n_action_steps: 16
 n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
 keypoint_visible_rate: 1.0
@@ -56,7 +56,7 @@ policy:
   obs_as_global_cond: true
   shape_meta: ${shape_meta}
 
-  use_pc_color: true
+  use_pc_color: false
   pointnet_type: "pointnet"
   downsample_points: true
   pointcloud_encoder_cfg:
