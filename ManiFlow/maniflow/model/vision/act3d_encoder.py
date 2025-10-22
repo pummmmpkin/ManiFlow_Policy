@@ -262,12 +262,12 @@ class Act3dEncoder(nn.Module):
             net_arch = state_mlp_size[:-1]
         output_dim = state_mlp_size[-1]
 
-        self.n_output_channels = encoder_output_dim * self.num_gripper_points
+        self.n_output_channels = encoder_output_dim 
         self.n_output_channels += output_dim
         if self.goal_mode == 'cross_attention_to_goal' and not self.final_attention: # [Debug] [Chialiang] 
-            self.n_output_channels += encoder_output_dim * self.num_gripper_points
+            self.n_output_channels += encoder_output_dim 
         if self.goal_mode == 'cross_attention_to_goal_pos_orn':
-            self.n_output_channels += encoder_output_dim * self.num_gripper_points
+            self.n_output_channels += encoder_output_dim 
         self.state_mlp = nn.Sequential(*create_mlp(self.state_shape[0], output_dim, net_arch, state_mlp_activation_fn))
 
     def forward(self, observation: Dict, return_full=False) -> torch.Tensor:
@@ -443,16 +443,17 @@ class Act3dEncoder(nn.Module):
         # perform cross attention between the scene pointcloud and the current end-effector points
         if not self.self_attention:
             rgb_features = einops.rearrange(
-                attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim").flatten(start_dim=1) # shape B (num_gripper_points * encoder_output_dim)
+                attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim") # shape B num_gripper_points, encoder_output_dim
         else:
             self_attn_output = nets['self_attn_layers'](
                 query=attn_output, value=attn_output,
                 query_pos=gripper_pcd_rel_pos_embedding, value_pos=gripper_pcd_rel_pos_embedding,
             )[-1]
             rgb_features = einops.rearrange(
-                self_attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim").flatten(start_dim=1)
+                self_attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim")
             
         state_feat = self.state_mlp(agent_pos)  # B * 64
+        state_feat = state_feat.unsqueeze(1).repeat(1, num_gripper_points, 1)  # B * num_gripper_points * 64
         obs_features = torch.cat([rgb_features, state_feat], dim=-1)
 
         if self.goal_mode in ['cross_attention_to_goal', "cross_attention_to_goal_not_concat_and_self_attention"]:
@@ -506,17 +507,18 @@ class Act3dEncoder(nn.Module):
                         query_pos=gripper_pcd_rel_pos_embedding, value_pos=gripper_pcd_rel_pos_embedding,
                     )[-1]
                     obs_features = einops.rearrange(
-                        final_attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim").flatten(start_dim=1)
+                        final_attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim")
                         
                     obs_features = torch.cat([obs_features, state_feat], dim=-1)     
                 else:
                     goal_features = einops.rearrange(
-                        goal_attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim").flatten(start_dim=1)
+                        goal_attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim")
 
-                    obs_features = torch.cat([obs_features, goal_features], dim=-1)    
+                    obs_features = torch.cat([obs_features, goal_features], dim=-1)  # (B,num_gripper_points, 2*encoder_output_dim + state_mlp_output_dim)
                 
                 
             elif self.goal_mode == 'cross_attention_to_goal_not_concat_and_self_attention': # using gripper features obtained from cross attention to object, and then do self attention
+                raise NotImplementedError
                 goal_attn_output = nets['goal_attn_layers'](query=attn_output, value=goal_gripper_pcd_features,
                     query_pos=gripper_pcd_rel_pos_embedding, value_pos=goal_gripper_pcd_rel_pos_embedding,
                 )[-1]
@@ -550,7 +552,7 @@ class Act3dEncoder(nn.Module):
                 goal_self_attn_output, "num_gripper_points B embed_dim -> B num_gripper_points embed_dim").flatten(start_dim=1)
             obs_features = torch.cat([obs_features, goal_features], dim=-1)
         
-        return obs_features
+        return obs_features # shape B num_gripper_points n_output_channels
     
     def output_shape(self):
         return self.n_output_channels

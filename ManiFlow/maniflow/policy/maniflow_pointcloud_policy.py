@@ -10,6 +10,7 @@ from maniflow.common.pytorch_util import dict_apply
 from maniflow.common.model_util import print_params
 from maniflow.model.vision_3d.pointnet_extractor import DP3Encoder
 from maniflow.model.vision.act3d_encoder import Act3dEncoder
+from maniflow.model.diffusion.dit import DiT
 from maniflow.model.diffusion.ditx import DiTX
 from maniflow.model.common.sample_util import *
 
@@ -47,6 +48,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
             sample_t_mode_consistency="discrete",
             sample_dt_mode_consistency="uniform", 
             sample_target_t_mode="relative", # relative, absolute
+            siglip_embedding=True,
             **kwargs):
         super().__init__()
 
@@ -77,6 +79,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         elif encoder_type == 'act3d':
             obs_encoder = Act3dEncoder(**pointcloud_encoder_cfg, encoder_output_dim=encoder_output_dim, 
                                        observation_space=obs_dict)
+            visual_cond_len = obs_encoder.num_gripper_points
         else:
             raise ValueError(f"Unsupported encoder type {encoder_type}")
         cprint(f"[Encoder_type] {encoder_type}", "yellow")
@@ -95,25 +98,44 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         cprint(f"[ManiFlowTransformerPointcloudPolicy] pointnet_type: {self.pointnet_type}", "yellow")
         
         cprint(f"[ManiFlowTransformerPointcloudPolicy] Using DiTX model", "red")
-        model = DiTX(
-            input_dim=input_dim,
-            output_dim=action_dim,
-            horizon=horizon,
-            n_obs_steps=n_obs_steps,
-            cond_dim=global_cond_dim,
-            visual_cond_len=visual_cond_len,
-            diffusion_timestep_embed_dim=diffusion_timestep_embed_dim,
-            diffusion_target_t_embed_dim=diffusion_target_t_embed_dim,
-            n_layer=n_layer,
-            n_head=n_head,
-            n_emb=n_emb,
-            qkv_bias=qkv_bias,
-            qk_norm=qk_norm,
-            block_type=block_type,
-            pre_norm_modality=pre_norm_modality,
-            language_conditioned=language_conditioned,
-        )
-        
+        if block_type == "DiT":
+            model = DiT(
+                input_dim=input_dim,
+                output_dim=action_dim,
+                horizon=horizon,
+                n_obs_steps=n_obs_steps,
+                cond_dim=global_cond_dim,
+                visual_cond_len=visual_cond_len,
+                diffusion_timestep_embed_dim=diffusion_timestep_embed_dim,
+                n_layer=n_layer,
+                n_head=n_head,
+                n_emb=n_emb,
+                language_conditioned=language_conditioned,
+            )
+        elif block_type == "DiTX":
+            model = DiTX(
+                input_dim=input_dim,
+                output_dim=action_dim,
+                horizon=horizon,
+                n_obs_steps=n_obs_steps,
+                cond_dim=global_cond_dim,
+                visual_cond_len=visual_cond_len,
+                diffusion_timestep_embed_dim=diffusion_timestep_embed_dim,
+                diffusion_target_t_embed_dim=diffusion_target_t_embed_dim,
+                n_layer=n_layer,
+                n_head=n_head,
+                n_emb=n_emb,
+                qkv_bias=qkv_bias,
+                qk_norm=qk_norm,
+                block_type=block_type,
+                pre_norm_modality=pre_norm_modality,
+                language_conditioned=language_conditioned,
+            )
+        if siglip_embedding:
+            self.register_buffer(
+                "siglip_text_features",
+                torch.load("/data/robogen/sim_chenyuan/ManiFlow_Policy/siglip_text_features.pt")
+            )
         self.obs_encoder = obs_encoder
         self.model = model
         
@@ -136,6 +158,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         self.sample_t_mode_consistency = sample_t_mode_consistency
         self.sample_dt_mode_consistency = sample_dt_mode_consistency
         self.sample_target_t_mode = sample_target_t_mode
+        self.siglip_embedding = siglip_embedding
         assert self.sample_target_t_mode in ["absolute", "relative"], "sample_target_t_mode must be either 'absolute' or 'relative'"
 
         cprint(f"[ManiFlowTransformerPointcloudPolicy] Initialized with parameters:", "yellow")
@@ -178,7 +201,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
     
 
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor], lang_cond: Optional[str] = None) -> Dict[str, torch.Tensor]:
+    def predict_action(self, obs_dict: Dict[str, torch.Tensor], lang_cond: Optional[str] = None, cat_idx = None) -> Dict[str, torch.Tensor]:
         """
         obs_dict: must include "obs" key
         result: must include "action" key
@@ -203,10 +226,16 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         vis_cond = None
         # lang_cond = None
 
-        if self.language_conditioned and lang_cond is None:
+        if self.language_conditioned:
+            if self.siglip_embedding:
+                assert cat_idx is not None, "cat_idx must be provided when using siglip_embedding"
+                lang_cond = self.siglip_text_features[cat_idx]
+                if lang_cond.ndim == 1:
+                    lang_cond = lang_cond.unsqueeze(0)
             # assume nobs has 'task_name' key for language condition
-            lang_cond = nobs.get('task_name', None)
-            assert lang_cond is not None, "Language goal is required"
+            elif lang_cond is None:
+                lang_cond = nobs.get('task_name', None)
+                assert lang_cond is not None, "Language goal is required"
         
         # condition through visual feature
         this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]).to(device))
@@ -484,6 +513,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
             nobs['point_cloud'] = nobs['point_cloud'][..., :3]
         
         batch_size = nactions.shape[0]
+        # print("Batch size:", batch_size)
         horizon = nactions.shape[1]
 
         # handle different ways of passing observation
@@ -494,10 +524,15 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         lang_cond = None
         ema_model = ema_model
 
-        if self.language_conditioned:            
+        if self.language_conditioned:   
+            if self.siglip_embedding:
+                assert 'cat_idx' in batch, "cat_idx must be provided in the batch when using siglip_embedding"
+                cat_idx = batch['cat_idx'].squeeze(-1)
+                lang_cond = self.siglip_text_features[cat_idx]      
             # we assume language condition is passed as 'task_name'
-            lang_cond = nobs.get('task_name', None)
-            assert lang_cond is not None, "Language goal is required"
+            else:
+                lang_cond = nobs.get('task_name', None)
+                assert lang_cond is not None, "Language goal is required"
 
         # reshape B, T, ... to B*T
         this_nobs = dict_apply(nobs, 
@@ -522,22 +557,24 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
             target_t=flow_target_dict['target_t'].squeeze(),
             vis_cond=vis_cond[:flow_batchsize],
             lang_cond=flow_target_dict['lang_cond'][:flow_batchsize] if lang_cond is not None else None)
+        # print("v_flow_pred shape:", v_flow_pred)
         v_flow_pred_magnitude = torch.sqrt(torch.mean(v_flow_pred ** 2)).item()
 
         # Get consistency velocity targets
-        consistency_target_dict = self.get_consistency_velocity(nactions[flow_batchsize:flow_batchsize+consistency_batchsize],
-                                                                        vis_cond=vis_cond[flow_batchsize:flow_batchsize+consistency_batchsize],
-                                                                        lang_cond=lang_cond[flow_batchsize:flow_batchsize+consistency_batchsize] if lang_cond is not None else None,
-                                                                        ema_model=ema_model
-                                                                        )
-        v_ct_pred = self.model(
-            sample=consistency_target_dict['x_t'], 
-            timestep=consistency_target_dict['t'].squeeze(),
-            target_t=consistency_target_dict['target_t'].squeeze(),
-            vis_cond=vis_cond[flow_batchsize:flow_batchsize+consistency_batchsize],
-            lang_cond=lang_cond[flow_batchsize:flow_batchsize+consistency_batchsize] if lang_cond is not None else None,
-            )
-        v_ct_pred_magnitude = torch.sqrt(torch.mean(v_ct_pred ** 2)).item()
+        if consistency_batchsize> 0:
+            consistency_target_dict = self.get_consistency_velocity(nactions[flow_batchsize:flow_batchsize+consistency_batchsize],
+                                                                            vis_cond=vis_cond[flow_batchsize:flow_batchsize+consistency_batchsize],
+                                                                            lang_cond=lang_cond[flow_batchsize:flow_batchsize+consistency_batchsize] if lang_cond is not None else None,
+                                                                            ema_model=ema_model
+                                                                            )
+            v_ct_pred = self.model(
+                sample=consistency_target_dict['x_t'], 
+                timestep=consistency_target_dict['t'].squeeze(),
+                target_t=consistency_target_dict['target_t'].squeeze(),
+                vis_cond=vis_cond[flow_batchsize:flow_batchsize+consistency_batchsize],
+                lang_cond=lang_cond[flow_batchsize:flow_batchsize+consistency_batchsize] if lang_cond is not None else None,
+                )
+            v_ct_pred_magnitude = torch.sqrt(torch.mean(v_ct_pred ** 2)).item()
 
         """Compute losses"""
         loss = 0.
@@ -550,11 +587,15 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         loss_flow = loss_flow.mean().item()
 
         # compute consistency training loss
-        v_ct_target = consistency_target_dict['v_target']
-        loss_ct = F.mse_loss(v_ct_pred, v_ct_target, reduction='none')
-        loss_ct = reduce(loss_ct, 'b ... -> b (...)', 'mean')
-        loss += loss_ct.mean()
-        loss_ct = loss_ct.mean().item()  
+        if consistency_batchsize > 0:
+            v_ct_target = consistency_target_dict['v_target']
+            loss_ct = F.mse_loss(v_ct_pred, v_ct_target, reduction='none')
+            loss_ct = reduce(loss_ct, 'b ... -> b (...)', 'mean')
+            loss += loss_ct.mean()
+            loss_ct = loss_ct.mean().item()  
+        else:
+            loss_ct = 0.0
+            v_ct_pred_magnitude = 0.0
 
         loss = loss.mean()
         loss_dict = {

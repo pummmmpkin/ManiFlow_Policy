@@ -360,8 +360,8 @@ class TrainManiFlowDexWorkspace:
                     batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
                     obs_dict = batch['obs']
                     gt_action = batch['action']
-                    
-                    result = policy.predict_action(obs_dict)
+                    cat_idx = batch['cat_idx'].squeeze(-1)
+                    result = policy.predict_action(obs_dict, cat_idx=cat_idx)
                     pred_action = result['action_pred']
                     mse = torch.nn.functional.mse_loss(pred_action, gt_action)
                     step_log['train_action_mse_error'] = mse.item()
@@ -395,10 +395,10 @@ class TrainManiFlowDexWorkspace:
                 # We can't copy the last checkpoint here
                 # since save_checkpoint uses threads.
                 # therefore at this point the file might have been empty!
-                topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
+                # topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
 
-                if topk_ckpt_path is not None:
-                    self.save_checkpoint(path=topk_ckpt_path)
+                # if topk_ckpt_path is not None:
+                #     self.save_checkpoint(path=topk_ckpt_path)
             # ========= eval end for this epoch ==========
             policy.train()
 

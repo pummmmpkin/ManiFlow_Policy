@@ -6,6 +6,12 @@
 *.zip
 *.ckpt
 .DS_Store
+.mujoco/
+ckpt/
+data/
+manipulation/
+pybullet_ompl/
+objaverse_utils/
 __pycache__/
 scripts/plot/pdfs/
 videos/
