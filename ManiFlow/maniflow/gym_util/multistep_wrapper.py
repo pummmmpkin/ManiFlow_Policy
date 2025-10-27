@@ -4,7 +4,8 @@ import numpy as np
 import torch
 from collections import defaultdict, deque
 import dill
-
+import time
+from termcolor import cprint
 
 def stack_repeated(x, n):
     return np.repeat(np.expand_dims(x,axis=0),n,axis=0)
@@ -121,11 +122,11 @@ class MultiStepWrapper(gym.Wrapper):
         self.reward = list()
         self.done = list()
         self.info = defaultdict(lambda : deque(maxlen=n_obs_steps+1))
+        self.env = env
     
-    def reset(self):
+    def reset(self, **kwargs):
         """Resets the environment using kwargs."""
-        obs = super().reset()
-
+        obs = super().reset(**kwargs)
         self.obs = deque([obs], maxlen=self.n_obs_steps+1)
         self.reward = list()
         self.done = list()
@@ -134,16 +135,24 @@ class MultiStepWrapper(gym.Wrapper):
         obs = self._get_obs(self.n_obs_steps)
         return obs
 
-    def step(self, action):
+    def step(self, action, **kwrags):
         """
         actions: (n_action_steps,) + action_shape
         """
-        for act in action:
+        for a_idx, act in enumerate(action):
             if len(self.done) > 0 and self.done[-1]:
                 # termination
                 break
-            observation, reward, done, info = super().step(act)
-
+            # observation, reward, done, info = super().step(act, **kwrags)
+            
+            # if a_idx != len(action) - 1:
+            #     observation, reward, done, info = self.env.step(act, render=False, **kwrags)
+            # else:
+            # beg = time.time()
+            observation, reward, done, info = self.env.step(act, render=True, **kwrags)
+            # end = time.time()
+            # cprint(f"multistep wrapper Step time: {end - beg}", "yellow")
+                
             self.obs.append(observation)
             self.reward.append(reward)
             if (self.max_episode_steps is not None) \
