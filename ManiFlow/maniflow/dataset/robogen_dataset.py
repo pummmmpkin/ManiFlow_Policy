@@ -98,7 +98,7 @@ def get_zarry_paths(zarr_path):
         inside_whole_prefix = '/tmp/dp3_demo_combined_2_step_0/inside_whole'
         inside_whole_names = os.listdir(inside_whole_prefix)
         inside_whole_zarr_paths = [
-            "{}/{}".format(inside_whole_prefix, inside_whole_names[i]) for i in range(len(inside_whole_names))
+            "{}/{}".format(inside_whole_prefix, inside_whole_names[0]) 
         ]    
         all_zarr_paths = inside_whole_zarr_paths
     if zarr_path == 'grasp':

@@ -27,6 +27,10 @@ import dill
 from omegaconf import OmegaConf
 import pathlib
 from torch.utils.data import DataLoader
+# ddp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 import copy
 import random
 import wandb
@@ -46,6 +50,23 @@ from maniflow.common.pytorch_util import dict_apply, optimizer_to
 from maniflow.model.diffusion.ema_model import EMAModel
 from maniflow.model.common.lr_scheduler import get_scheduler
 
+# ddp tools
+def is_dist_avail_and_initialized():
+    return dist.is_available() and dist.is_initialized()
+
+def get_rank():
+    return dist.get_rank() if is_dist_avail_and_initialized() else 0
+
+def is_main_process():
+    return get_rank() == 0
+    # return True  # for debug
+
+def all_reduce_mean(t: torch.Tensor):
+    if is_dist_avail_and_initialized():
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        t /= dist.get_world_size()
+    return t
+
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 def upload_file(local_folder):
@@ -64,9 +85,10 @@ class TrainManiFlowDexWorkspace:
     include_keys = ['global_step', 'epoch']
     exclude_keys = tuple()
 
-    def __init__(self, cfg: OmegaConf, output_dir=None):
+    def __init__(self, cfg: OmegaConf, output_dir=None, local_rank=0):
         self.cfg = cfg
         self._output_dir = output_dir
+        self.local_rank = local_rank
         self._saving_thread = None
         
         # set seed
@@ -115,18 +137,26 @@ class TrainManiFlowDexWorkspace:
         
         RUN_VALIDATION = False # reduce time cost
         
-        # resume training
-        if cfg.training.resume:
-            lastest_ckpt_path = self.get_checkpoint_path()
-            if lastest_ckpt_path.is_file():
-                print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
-        
         # configure dataset
         dataset: BaseDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseDataset), print(f"dataset must be BaseDataset, got {type(dataset)}")
-        train_dataloader = DataLoader(dataset, **cfg.dataloader)
+        # train_sampler = DistributedSampler(dataset, shuffle=True, drop_last=False)
+        # # train_dataloader = DataLoader(dataset, **cfg.dataloader)
+        # train_dataloader = DataLoader(
+        #     dataset,
+        #     **{k:v for k,v in cfg.dataloader.items() if k != "shuffle"},  # 不要再传 shuffle
+        #     shuffle=False,
+        #     sampler=train_sampler,
+
+        # )
+        train_dataloader = DataLoader(dataset, 
+                                      shuffle=False,
+                                      sampler=DistributedSampler(dataset),
+                                      batch_size=cfg.dataloader.batch_size,
+                                      num_workers=cfg.dataloader.num_workers,
+                                      pin_memory=True,
+                                      )
         normalizer = dataset.get_normalizer()
 
         # print dataset info
@@ -138,7 +168,14 @@ class TrainManiFlowDexWorkspace:
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()
-        val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
+        # val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
+        val_dataloader = DataLoader(val_dataset, 
+                                      shuffle=False,
+                                      sampler=DistributedSampler(val_dataset),
+                                      batch_size=cfg.dataloader.batch_size,
+                                      num_workers=cfg.dataloader.num_workers,
+                                      pin_memory=True,
+                                      )
 
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
@@ -180,17 +217,17 @@ class TrainManiFlowDexWorkspace:
         cprint(f"[WandB] name: {cfg.logging.name}", "yellow")
         cprint("-----------------------------", "yellow")
         # configure logging
-        wandb_run = wandb.init(
-            dir=str(self.output_dir),
-            config=OmegaConf.to_container(cfg, resolve=True),
-            **cfg.logging
-        )
-        wandb.config.update(
-            {
-                "output_dir": self.output_dir,
-            }
-        )
-
+        if is_main_process():
+            wandb_run = wandb.init(
+                dir=str(self.output_dir),
+                config=OmegaConf.to_container(cfg, resolve=True),
+                **cfg.logging
+            )
+            wandb.config.update({"output_dir": self.output_dir})
+        else:
+            # 其它进程禁用 wandb，避免多进程重复写
+            wandb_run = None
+            os.environ["WANDB_MODE"] = "offline"
         # configure checkpoint
         topk_manager = TopKCheckpointManager(
             save_dir=os.path.join(self.output_dir, 'checkpoints'),
@@ -198,10 +235,26 @@ class TrainManiFlowDexWorkspace:
         )
 
         # device transfer
-        device = torch.device(cfg.training.device)
+        device = torch.device(f"cuda:{self.local_rank}")
         self.model.to(device)
         if self.ema_model is not None:
             self.ema_model.to(device)
+
+        # 用 DDP 包装主模型
+        self.model = DDP(
+            self.model,
+            device_ids=[self.local_rank],
+            output_device=self.local_rank,
+            find_unused_parameters=False  # 若模型存在条件分支用不到的参数，可设 True
+        )
+
+         # resume training
+        if cfg.training.resume:
+            lastest_ckpt_path = self.get_checkpoint_path()
+            if lastest_ckpt_path.is_file():
+                print(f"Resuming from checkpoint {lastest_ckpt_path}")
+                self.load_checkpoint(path=lastest_ckpt_path)
+
         optimizer_to(self.optimizer, device)
 
         # save batch for sampling
@@ -211,68 +264,90 @@ class TrainManiFlowDexWorkspace:
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         for local_epoch_idx in range(cfg.training.num_epochs):
+            train_dataloader.sampler.set_epoch(self.epoch)
+            val_dataloader.sampler.set_epoch(self.epoch)
             step_log = dict()
             # ========= train for this epoch ==========
             train_losses = list()
-            with tqdm.tqdm(train_dataloader, desc=f"Training epoch {self.epoch}", 
-                    leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
-                for batch_idx, batch in enumerate(tepoch):
-                    t1 = time.time()
-                    # device transfer
-                    batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                    if train_sampling_batch is None:
-                        train_sampling_batch = batch
-                
-                    # compute loss
-                    t1_1 = time.time()
-                    # Forward pass
-                    raw_loss, loss_dict = self.model.compute_loss(batch, self.ema_model)
+            # use_tqdm = is_main_process()
+            use_tqdm = False
+            iterable = train_dataloader if not use_tqdm else tqdm.tqdm(
+                train_dataloader, desc=f"Training epoch {self.epoch}",
+                leave=False, mininterval=cfg.training.tqdm_interval_sec
+            )
+            for batch_idx, batch in enumerate(iterable):
+                t1 = time.time()
+                # device transfer
+                batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                if train_sampling_batch is None:
+                    train_sampling_batch = batch
+            
+                # compute loss
+                t1_1 = time.time()
+                # Forward pass
+                raw_loss, loss_dict = self.model.module.compute_loss(batch, self.ema_model)
 
-                    loss = raw_loss / cfg.training.gradient_accumulate_every
+                loss = raw_loss / cfg.training.gradient_accumulate_every
+                # Only synchronize gradients on the last accumulation step
+                will_sync = True
+
+                if will_sync:
                     loss.backward()
-                    
-                    t1_2 = time.time()
+                else:
+                    # ✅ prevent unnecessary allreduce calls
+                    with self.model.no_sync():
+                        loss.backward()
 
-                    # step optimizer
-                    if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                        self.optimizer.step()
-                        self.optimizer.zero_grad()
-                        lr_scheduler.step()
-                    t1_3 = time.time()
-                    # update ema
-                    if cfg.training.use_ema:
-                        ema.step(self.model)
-                    t1_4 = time.time()
-                    # logging
-                    raw_loss_cpu = raw_loss.item()
-                    tepoch.set_postfix(loss=raw_loss_cpu, refresh=False)
-                    train_losses.append(raw_loss_cpu)
-                    step_log = {
-                        'train_loss': raw_loss_cpu,
-                        'global_step': self.global_step,
-                        'epoch': self.epoch,
-                        'lr': lr_scheduler.get_last_lr()[0]
-                    }
-                    t1_5 = time.time()
-                    step_log.update(loss_dict)
-                    t2 = time.time()
-                    
-                    if verbose:
-                        print(f"total one step time: {t2-t1:.3f}")
-                        print(f" compute loss time: {t1_2-t1_1:.3f}")
-                        print(f" step optimizer time: {t1_3-t1_2:.3f}")
-                        print(f" update ema time: {t1_4-t1_3:.3f}")
-                        print(f" logging time: {t1_5-t1_4:.3f}")
+                # Update parameters only on sync step
+                if will_sync:
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    lr_scheduler.step()
+                
+                t1_2 = time.time()
 
-                    is_last_batch = (batch_idx == (len(train_dataloader)-1))
-                    if not is_last_batch:
-                        # log of last step is combined with validation and rollout
+                # step optimizer
+                if self.global_step % cfg.training.gradient_accumulate_every == 0:
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    lr_scheduler.step()
+                t1_3 = time.time()
+                # update ema
+                if cfg.training.use_ema:
+                    ema.step(self.model.module)
+                t1_4 = time.time()
+                # logging
+                raw_loss_cpu = raw_loss.item()
+                if use_tqdm:
+                    iterable.set_postfix(loss=raw_loss_cpu, refresh=False)
+                train_losses.append(raw_loss_cpu)
+                step_log = {
+                    'train_loss': raw_loss_cpu,
+                    'global_step': self.global_step,
+                    'epoch': self.epoch,
+                    'lr': lr_scheduler.get_last_lr()[0]
+                }
+                t1_5 = time.time()
+                step_log.update(loss_dict)
+                t2 = time.time()
+                
+                if verbose:
+                    print(f"total one step time: {t2-t1:.3f}")
+                    print(f" compute loss time: {t1_2-t1_1:.3f}")
+                    print(f" step optimizer time: {t1_3-t1_2:.3f}")
+                    print(f" update ema time: {t1_4-t1_3:.3f}")
+                    print(f" logging time: {t1_5-t1_4:.3f}")
+
+                is_last_batch = (batch_idx == (len(train_dataloader)-1))
+                if not is_last_batch:
+                    # log of last step is combined with validation and rollout
+                    if is_main_process():
                         wandb_run.log(step_log, step=self.global_step)
-                        self.global_step += 1
+                    self.global_step += 1
 
-                    if (cfg.training.max_train_steps is not None) \
-                        and batch_idx >= (cfg.training.max_train_steps-1):
-                        break
+                if (cfg.training.max_train_steps is not None) \
+                    and batch_idx >= (cfg.training.max_train_steps-1):
+                    break
 
             # at the end of each epoch
             # replace train_loss with epoch average
@@ -343,7 +418,7 @@ class TrainManiFlowDexWorkspace:
                             batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                         
                             # Forward pass
-                            loss, loss_dict = self.model.compute_loss(batch, self.ema_model)
+                            loss, loss_dict = self.model.module.compute_loss(batch, self.ema_model)
                             val_losses.append(loss)
                             if (cfg.training.max_val_steps is not None) \
                                 and batch_idx >= (cfg.training.max_val_steps-1):
@@ -376,15 +451,22 @@ class TrainManiFlowDexWorkspace:
                 step_log['test_mean_score'] = - train_loss
                 
             # checkpoint
-            if (self.epoch % cfg.training.checkpoint_every) == 0 and cfg.checkpoint.save_ckpt:
+            if is_main_process() and (self.epoch % cfg.training.checkpoint_every) == 0 and cfg.checkpoint.save_ckpt:
                 self.save_checkpoint(tag=f'epoch-{self.epoch}')
                 # checkpointing
                 if cfg.checkpoint.save_last_ckpt:
                     self.save_checkpoint()
                 if cfg.checkpoint.save_last_snapshot:
                     self.save_snapshot()
-                upload_file(self.output_dir)
-                print(f"Epoch {self.epoch} uploaded.")
+                def _async_upload():
+                    try:
+                        upload_file(self.output_dir)
+                        print(f"Epoch {self.epoch} uploaded.")
+                    except Exception as e:
+                        print(f"[Upload Warning] {e}")
+
+                threading.Thread(target=_async_upload, daemon=True).start()
+                # print(f"Epoch {self.epoch} uploaded.")
 
                 # sanitize metric names
                 metric_dict = dict()
@@ -396,15 +478,20 @@ class TrainManiFlowDexWorkspace:
                 # since save_checkpoint uses threads.
                 # therefore at this point the file might have been empty!
                 # topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
+                # topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
 
                 # if topk_ckpt_path is not None:
                 #     self.save_checkpoint(path=topk_ckpt_path)
+                # if topk_ckpt_path is not None:
+                #     self.save_checkpoint(path=topk_ckpt_path)
             # ========= eval end for this epoch ==========
+            # dist.barrier()
             policy.train()
 
             # end of epoch
             # log of last step is combined with validation and rollout
-            wandb_run.log(step_log, step=self.global_step)
+            if is_main_process():
+                wandb_run.log(step_log, step=self.global_step)
             self.global_step += 1
             self.epoch += 1
             del step_log
@@ -574,8 +661,24 @@ class TrainManiFlowDexWorkspace:
     config_path=str(pathlib.Path(__file__).parent.parent.joinpath('config'))
 )
 def main(cfg):
-    workspace = TrainManiFlowDexWorkspace(cfg)
-    workspace.run()
+    # -------- DDP init begin --------
+    # torchrun 会自动设置 LOCAL_RANK / RANK / WORLD_SIZE 等环境变量
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl", init_method="env://")
+    # 为了不同进程的数据打乱不一致
+    seed = int(cfg.training.seed)
+    seed = seed + get_rank()
+    torch.manual_seed(seed); random.seed(seed); np.random.seed(seed)
+    # -------- DDP init end --------
+
+    try:
+        workspace = TrainManiFlowDexWorkspace(cfg, local_rank=local_rank)
+        print(f"Workspace created. Local rank: {local_rank}. Global rank: {get_rank()}.")
+        workspace.run()
+    finally:
+        dist.barrier()
+        dist.destroy_process_group()
 
 if __name__ == "__main__":
-    main()
+    main()  # pylint: disable=no-value-for-parameter

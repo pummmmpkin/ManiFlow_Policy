@@ -7,7 +7,8 @@
 
 DEBUG=False
 save_ckpt=True
-checkpoint_every=10
+checkpoint_every=4
+training_epochs=100
 batch_size=256
 train=True
 eval=False # set to false since mostly we do online eval for adroit/dexart tasks
@@ -62,7 +63,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export VK_ICD_FILENAMES="${SCRIPT_DIR}/nvidia_icd.json"
 export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES=${gpu_id}
+cuda_ids=${gpu_id//_/,}  # 转成 CUDA 格式 1,2,3
+num_gpus=$(echo $cuda_ids | tr ',' ' ' | wc -w)
+export CUDA_VISIBLE_DEVICES=$cuda_ids
 
 
 # Set wandb mode based on debug flag
@@ -99,10 +102,12 @@ train_ratio=0.9
 # Training phase
 if [ $train = True ]; then
     echo -e "\033[32m=== Starting Training ===\033[0m"
-    python train_maniflow_robogen_workspace.py \
+    torchrun --standalone --nproc_per_node=$num_gpus \
+        train_maniflow_robogen_workspace.py \
         --config-name=${config_name}.yaml \
         policy.language_conditioned=True \
         training.checkpoint_every=${checkpoint_every} \
+        training.num_epochs=${training_epochs} \
         dataloader.batch_size="${batch_size}" \
         task=${task_name} \
         task.dataset.zarr_path=${zarr_path} \
@@ -131,6 +136,7 @@ if [ $train = True ]; then
         training.seed=${seed} \
         training.device="cuda:0" \
         exp_name=${exp_name} \
+        logging.name=${exp_name} \
         logging.mode=${wandb_mode} \
         checkpoint.save_ckpt=${save_ckpt}
     

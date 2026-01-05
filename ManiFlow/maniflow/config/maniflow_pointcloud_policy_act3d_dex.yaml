@@ -18,8 +18,8 @@ obs_as_global_cond: true
 policy:
   _target_: maniflow.policy.maniflow_pointcloud_policy.ManiFlowTransformerPointcloudPolicy
   model_name: "DiTX"
-  n_layer: 12  # max 28
-  n_head: 8  # max 16
+  n_layer: 28  # max 28
+  n_head: 16  # max 16
   n_emb: 768 # max 1152
   visual_cond_len: 64 # adjust according to the task
   max_lang_cond_len: 1024 # maximum length of language tokens
@@ -129,7 +129,7 @@ logging:
   id: null
   mode: online
   name: ${training.seed}
-  project: your_project_name_here
+  project: ManiFlow
   resume: true
   tags:
   - ${logging.project}

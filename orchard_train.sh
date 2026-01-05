@@ -22,4 +22,4 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # export MKL_NUM_THREADS=2
 
 bash /project/flame/chenyuah/RoboGen-sim2real/orchard_scripts/download.sh 165-obj
-bash scripts/train_robogen.sh maniflow_pointcloud_policy robogen_open_door open_only 0922_open_1024 0 0_1_2_3
+bash scripts/train_robogen.sh maniflow_pointcloud_policy robogen_open_door open_only 0929_open_1024 0 0_1_2_3
