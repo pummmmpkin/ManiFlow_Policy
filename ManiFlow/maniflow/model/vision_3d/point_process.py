@@ -9,6 +9,8 @@ import random
 
 __all__ = ["shuffle_point_torch", "pad_point_torch", "uniform_sampling_torch", "fps_torch"]
 
+_FPS_FALLBACK_WARNED = False
+
 def shuffle_point_numpy(point_cloud):
     B, N, C = point_cloud.shape
     indices = np.random.permutation(N)
@@ -74,13 +76,25 @@ def fps_torch(points, num_points=1024):
     """
     B, N, C = points.shape
     K = num_points
-    if C == 3:
-        sampled_points, indices = torch3d_ops.sample_farthest_points(points=points, K=K)
-        sampled_points = sampled_points.contiguous()
-    elif C > 3:
-        # pcd + features, pcd must be the first 3 channels
-        _, indices = torch3d_ops.sample_farthest_points(points=points[..., :3], K=K)
-        sampled_points = points[torch.arange(B).unsqueeze(1), indices]
+    try:
+        if C == 3:
+            sampled_points, indices = torch3d_ops.sample_farthest_points(points=points, K=K)
+            sampled_points = sampled_points.contiguous()
+        elif C > 3:
+            # pcd + features, pcd must be the first 3 channels
+            _, indices = torch3d_ops.sample_farthest_points(points=points[..., :3], K=K)
+            sampled_points = points[torch.arange(B, device=points.device).unsqueeze(1), indices]
+        else:
+            raise ValueError(f"points.shape[-1] must be >= 3, got {C}")
+    except RuntimeError as e:
+        global _FPS_FALLBACK_WARNED
+        if "no kernel image is available for execution on the device" not in str(e):
+            raise
+        if not _FPS_FALLBACK_WARNED:
+            print("[point_process] pytorch3d FPS kernel is unavailable on this GPU. Falling back to uniform sampling.")
+            _FPS_FALLBACK_WARNED = True
+        sampled_points = uniform_sampling_torch(points, num_points)
+        indices = None
    
     return sampled_points, indices
 

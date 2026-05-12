@@ -81,6 +81,69 @@ def upload_file(local_folder):
     except subprocess.CalledProcessError as e:
         print(f"[Failure] Failed to upload {local_folder}: {e.stderr.strip()}")
 
+
+def _normalizer_flat_key(field_key: str, stat_name: str):
+    if stat_name in ('scale', 'offset'):
+        return f'params_dict.{field_key}.{stat_name}'
+    return f'params_dict.{field_key}.input_stats.{stat_name}'
+
+
+def _get_identity_normalizer_field_state(field_key: str, dim: int, dtype=torch.float32):
+    return {
+        _normalizer_flat_key(field_key, 'scale'): torch.ones(dim, dtype=dtype),
+        _normalizer_flat_key(field_key, 'offset'): torch.zeros(dim, dtype=dtype),
+        _normalizer_flat_key(field_key, 'min'): -torch.ones(dim, dtype=dtype),
+        _normalizer_flat_key(field_key, 'max'): torch.ones(dim, dtype=dtype),
+        _normalizer_flat_key(field_key, 'mean'): torch.zeros(dim, dtype=dtype),
+        _normalizer_flat_key(field_key, 'std'): torch.ones(dim, dtype=dtype),
+    }
+
+
+def maybe_expand_normalizer_channels(normalizer_state_dict, key: str, target_dim: int):
+    scale_key = _normalizer_flat_key(key, 'scale')
+    offset_key = _normalizer_flat_key(key, 'offset')
+    if scale_key not in normalizer_state_dict:
+        return normalizer_state_dict
+    field_scale = normalizer_state_dict[scale_key]
+    current_dim = int(field_scale.numel())
+    if current_dim >= target_dim:
+        return normalizer_state_dict
+
+    extra_dim = target_dim - current_dim
+    dtype = field_scale.dtype
+    device = field_scale.device
+
+    def _cat_extra(base_tensor, extra_tensor):
+        return torch.cat([base_tensor.detach().to(device=device), extra_tensor.to(device=device)], dim=0)
+
+    min_key = _normalizer_flat_key(key, 'min')
+    max_key = _normalizer_flat_key(key, 'max')
+    mean_key = _normalizer_flat_key(key, 'mean')
+    std_key = _normalizer_flat_key(key, 'std')
+
+    base_min = normalizer_state_dict.get(min_key, -torch.ones(current_dim, dtype=dtype, device=device))
+    base_max = normalizer_state_dict.get(max_key, torch.ones(current_dim, dtype=dtype, device=device))
+    base_mean = normalizer_state_dict.get(mean_key, torch.zeros(current_dim, dtype=dtype, device=device))
+    base_std = normalizer_state_dict.get(std_key, torch.ones(current_dim, dtype=dtype, device=device))
+
+    normalizer_state_dict[scale_key] = _cat_extra(field_scale, torch.ones(extra_dim, dtype=dtype))
+    normalizer_state_dict[offset_key] = _cat_extra(
+        normalizer_state_dict[offset_key], torch.zeros(extra_dim, dtype=dtype)
+    )
+    normalizer_state_dict[min_key] = _cat_extra(base_min, -torch.ones(extra_dim, dtype=dtype))
+    normalizer_state_dict[max_key] = _cat_extra(base_max, torch.ones(extra_dim, dtype=dtype))
+    normalizer_state_dict[mean_key] = _cat_extra(base_mean, torch.zeros(extra_dim, dtype=dtype))
+    normalizer_state_dict[std_key] = _cat_extra(base_std, torch.ones(extra_dim, dtype=dtype))
+    return normalizer_state_dict
+
+
+def ensure_identity_normalizer_key(normalizer_state_dict, key: str, dim: int, dtype=torch.float32):
+    scale_key = _normalizer_flat_key(key, 'scale')
+    if scale_key in normalizer_state_dict:
+        return normalizer_state_dict
+    normalizer_state_dict.update(_get_identity_normalizer_field_state(key, dim, dtype=dtype))
+    return normalizer_state_dict
+
 class TrainManiFlowDexWorkspace:
     include_keys = ['global_step', 'epoch']
     exclude_keys = tuple()
@@ -106,6 +169,9 @@ class TrainManiFlowDexWorkspace:
                 self.ema_model = copy.deepcopy(self.model)
             except: # minkowski engine could not be copied. recreate it
                 self.ema_model = hydra.utils.instantiate(cfg.policy)
+
+        if getattr(cfg, 'load_policy_path', None) is not None:
+            self.load_policy(cfg.load_policy_path)
 
 
         # configure training state
@@ -177,9 +243,10 @@ class TrainManiFlowDexWorkspace:
                                       pin_memory=True,
                                       )
 
-        self.model.set_normalizer(normalizer)
-        if cfg.training.use_ema:
-            self.ema_model.set_normalizer(normalizer)
+        if getattr(cfg.training, 'use_dataset_normalization', True):
+            self.model.set_normalizer(normalizer)
+            if cfg.training.use_ema:
+                self.ema_model.set_normalizer(normalizer)
 
         # configure lr scheduler
         lr_scheduler = get_scheduler(
@@ -264,13 +331,14 @@ class TrainManiFlowDexWorkspace:
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         for local_epoch_idx in range(cfg.training.num_epochs):
+            dist.barrier()
             train_dataloader.sampler.set_epoch(self.epoch)
             val_dataloader.sampler.set_epoch(self.epoch)
+            print(f"[rank{get_rank()}] START EPOCH {self.epoch}", flush=True)
             step_log = dict()
             # ========= train for this epoch ==========
             train_losses = list()
-            # use_tqdm = is_main_process()
-            use_tqdm = False
+            use_tqdm = is_main_process()
             iterable = train_dataloader if not use_tqdm else tqdm.tqdm(
                 train_dataloader, desc=f"Training epoch {self.epoch}",
                 leave=False, mininterval=cfg.training.tqdm_interval_sec
@@ -438,6 +506,8 @@ class TrainManiFlowDexWorkspace:
                     cat_idx = batch['cat_idx'].squeeze(-1)
                     result = policy.predict_action(obs_dict, cat_idx=cat_idx)
                     pred_action = result['action_pred']
+                    pred_action = pred_action.to(device)
+                    gt_action = gt_action.to(device)
                     mse = torch.nn.functional.mse_loss(pred_action, gt_action)
                     step_log['train_action_mse_error'] = mse.item()
                     del batch
@@ -458,14 +528,14 @@ class TrainManiFlowDexWorkspace:
                     self.save_checkpoint()
                 if cfg.checkpoint.save_last_snapshot:
                     self.save_snapshot()
-                def _async_upload():
-                    try:
-                        upload_file(self.output_dir)
-                        print(f"Epoch {self.epoch} uploaded.")
-                    except Exception as e:
-                        print(f"[Upload Warning] {e}")
+                # def _async_upload():
+                #     try:
+                #         upload_file(self.output_dir)
+                #         print(f"Epoch {self.epoch} uploaded.")
+                #     except Exception as e:
+                #         print(f"[Upload Warning] {e}")
 
-                threading.Thread(target=_async_upload, daemon=True).start()
+                # threading.Thread(target=_async_upload, daemon=True).start()
                 # print(f"Epoch {self.epoch} uploaded.")
 
                 # sanitize metric names
@@ -596,7 +666,81 @@ class TrainManiFlowDexWorkspace:
         else:
             raise NotImplementedError(f"tag {tag} not implemented")
             
-            
+    def load_policy(self, path):
+        path = pathlib.Path(path)
+        payload = torch.load(path.open('rb'), pickle_module=dill, map_location='cpu')
+
+        def _strip_module_prefix(state_dict):
+            if not any(key.startswith('module.') for key in state_dict.keys()):
+                return state_dict
+            return {
+                key[len('module.'):] if key.startswith('module.') else key: value
+                for key, value in state_dict.items()
+            }
+
+        def _filter_state_dict_for_module(module, loaded_state_dict, module_name):
+            loaded_state_dict = _strip_module_prefix(loaded_state_dict)
+            normalizer_keys = set()
+            normalizer_state_dict = {}
+            if hasattr(module, 'normalizer'):
+                normalizer_prefix = 'normalizer.'
+                normalizer_state_dict = {
+                    key[len(normalizer_prefix):]: value
+                    for key, value in loaded_state_dict.items()
+                    if key.startswith(normalizer_prefix)
+                }
+                normalizer_keys = {
+                    key for key in loaded_state_dict.keys()
+                    if key.startswith(normalizer_prefix)
+                }
+                target_pc_dim = int(getattr(self.cfg.policy.pointcloud_encoder_cfg, 'in_channels', 3))
+                agent_pos_dim = int(self.cfg.task.shape_meta.obs.agent_pos.shape[0])
+                action_dim = int(np.prod(self.cfg.task.shape_meta.action.shape))
+                if target_pc_dim > 3:
+                    normalizer_state_dict = maybe_expand_normalizer_channels(
+                        normalizer_state_dict, 'point_cloud', target_pc_dim
+                    )
+                normalizer_state_dict = ensure_identity_normalizer_key(
+                    normalizer_state_dict, 'point_cloud', target_pc_dim
+                )
+                normalizer_state_dict = ensure_identity_normalizer_key(
+                    normalizer_state_dict, 'agent_pos', agent_pos_dim
+                )
+                normalizer_state_dict = ensure_identity_normalizer_key(
+                    normalizer_state_dict, 'action', action_dim
+                )
+
+            current_state_dict = module.state_dict()
+            filtered_state_dict = {}
+            skipped_keys = []
+            for key, value in loaded_state_dict.items():
+                if key in normalizer_keys:
+                    continue
+                if key not in current_state_dict:
+                    skipped_keys.append((key, "missing_in_current_model"))
+                    continue
+                if current_state_dict[key].shape != value.shape:
+                    skipped_keys.append(
+                        (key, f"shape_mismatch ckpt={tuple(value.shape)} current={tuple(current_state_dict[key].shape)}")
+                    )
+                    continue
+                filtered_state_dict[key] = value
+
+            if skipped_keys:
+                print(f"Skipping {len(skipped_keys)} {module_name} keys during partial load:")
+                for key, reason in skipped_keys:
+                    print(f"  {key}: {reason}")
+            missing_keys, unexpected_keys = module.load_state_dict(filtered_state_dict, strict=False)
+            if hasattr(module, 'normalizer') and normalizer_state_dict:
+                module.normalizer.load_state_dict(normalizer_state_dict, strict=False)
+            if missing_keys:
+                print(f"Missing {module_name} keys after partial load: {missing_keys}")
+            if unexpected_keys:
+                print(f"Unexpected {module_name} keys after partial load: {unexpected_keys}")
+
+        _filter_state_dict_for_module(self.model, payload['state_dicts']['model'], "model")
+        if self.ema_model is not None and 'ema_model' in payload['state_dicts']:
+            _filter_state_dict_for_module(self.ema_model, payload['state_dicts']['ema_model'], "ema_model")
 
     def load_payload(self, payload, exclude_keys=None, include_keys=None, **kwargs):
         if exclude_keys is None:

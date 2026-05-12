@@ -39,8 +39,17 @@ all_task_names = [
     "close the toilet",
     "grasp the object",
     "place the object on top of the storage furniture",
-    "place the object inside the storage furniture"
+    "place the object inside the storage furniture",
+    "Place the square object into the pillar",
+    "Thread the wire through the hole",
+    "Assemble the three blocks into a single block",
+    "Stack the three blocks on top of each other",
+    "Stack the blocks on top of each other",
+    "Place the square block in the square hole",
+    "Pour the coffee into the cup",
 ]
+
+MIMICGEN_PREFIX = '/scratch/chenyuah/mimicgen'
 
 articulated_new = [
     # Bucket
@@ -141,7 +150,7 @@ def get_zarry_paths(zarr_path):
         all_zarr_paths = top_zarr_paths + inside_whole_zarr_paths + inside_link_zarr_paths
     if zarr_path == 'articulated':
         data_name = [
-            # save_data_name_0, save_data_name_1, save_data_name_2, save_data_name_3, save_data_name_4, 
+            save_data_name_0, save_data_name_1, save_data_name_2, save_data_name_3, save_data_name_4, 
             save_data_name_5, save_data_name_6, save_data_name_7, save_data_name_8, save_data_name_9,
             save_data_name_10, save_data_name_11, save_data_name_12, save_data_name_13, save_data_name_14, save_data_name_15, save_data_name_16, save_data_name_17, save_data_name_18, save_data_name_19,
             save_data_name_20, save_data_name_21, save_data_name_22, save_data_name_23, save_data_name_24, save_data_name_25, save_data_name_26, save_data_name_27, save_data_name_28, save_data_name_29,
@@ -153,8 +162,9 @@ def get_zarry_paths(zarr_path):
             "{}/{}".format(dataset_prefix, data_name[i]) for i in range(len(data_name))
         ]
     if zarr_path == 'articulated_250':
+        dataset_prefix = '/tmp/dp3_demo_combined_2_step_0/165-obj'
         data_name = [
-            # save_data_name_0, save_data_name_1, save_data_name_2, save_data_name_3, save_data_name_4, 
+            save_data_name_0, save_data_name_1, save_data_name_2, save_data_name_3, save_data_name_4, 
             save_data_name_5, save_data_name_6, save_data_name_7, save_data_name_8, save_data_name_9,
             save_data_name_10, save_data_name_11, save_data_name_12, save_data_name_13, save_data_name_14, save_data_name_15, save_data_name_16, save_data_name_17, save_data_name_18, save_data_name_19,
             save_data_name_20, save_data_name_21, save_data_name_22, save_data_name_23, save_data_name_24, save_data_name_25, save_data_name_26, save_data_name_27, save_data_name_28, save_data_name_29,
@@ -168,8 +178,13 @@ def get_zarry_paths(zarr_path):
         all_zarr_paths = [
             "{}/{}".format(dataset_prefix, data_name[i]) for i in range(len(data_name))
         ]
+        for i in range(len(all_zarr_paths)):
+            if not os.path.exists(all_zarr_paths[i]):
+                print("Path does not exist:", all_zarr_paths[i])
+                all_zarr_paths.pop(i)
     
     if zarr_path == 'articulated_full':
+        dataset_prefix = '/tmp/dp3_demo_combined_2_step_0/165-obj'
         all_zarr_paths_part_1 = ["{}/{}".format(dataset_prefix, globals()["save_data_name_{}".format(i)]) for i in range(246)]
         all_subfolders = sorted(os.listdir(dataset_prefix))
         object_other_categories_no_cam_rand = [x for x in all_subfolders if "1121-other-cat-no-cam-rand" in x]
@@ -205,6 +220,61 @@ def get_zarry_paths(zarr_path):
         all_zarr_paths_part_3 = [f for f in articulated_new if f in os.listdir(dataset_prefix)]
         all_zarr_paths_part_3 = ["{}/{}".format(dataset_prefix, name) for name in all_zarr_paths_part_3]
         all_zarr_paths = all_zarr_paths_part_1 + all_zarr_paths_part_2 + all_zarr_paths_part_3
+
+    if zarr_path == 'grasp-lift_open_close_pap-cgn-place':
+        dataset_prefix = '/tmp/dp3_demo_combined_2_step_0/165-obj'
+        all_zarr_paths_part_1 = ["{}/{}".format(dataset_prefix, globals()["save_data_name_{}".format(i)]) for i in range(246)]
+        all_subfolders = sorted(os.listdir(dataset_prefix))
+        object_other_categories_no_cam_rand = [x for x in all_subfolders if "1121-other-cat-no-cam-rand" in x]
+        all_zarr_paths_part_2 = [f"{dataset_prefix}/{x}" for x in object_other_categories_no_cam_rand]
+        all_zarr_paths_part_3 = [f for f in articulated_new if f in os.listdir(dataset_prefix)]
+        all_zarr_paths_part_3 = ["{}/{}".format(dataset_prefix, name) for name in all_zarr_paths_part_3]
+        all_zarr_paths = all_zarr_paths_part_1 + all_zarr_paths_part_2 + all_zarr_paths_part_3
+        close_prefix = '/tmp/dp3_demo_combined_2_step_0/invert_push'
+        close_names = os.listdir(close_prefix)
+        close_obj_paths = [
+            "{}/{}".format(close_prefix, close_names[i]) for i in range(len(close_names))
+        ]
+        all_zarr_paths += close_obj_paths
+        grasp_prefix = '/tmp/dp3_demo_combined_2_step_0/grasp_0103'
+        grasp_names = os.listdir(grasp_prefix)
+        grasp_zarr_paths = [
+            "{}/{}".format(grasp_prefix, grasp_names[i]) for i in range(len(grasp_names))
+        ]
+        all_zarr_paths += grasp_zarr_paths
+        top_prefix = '/tmp/dp3_demo_combined_2_step_0/top_cgn_place_0101'
+        top_names = os.listdir(top_prefix)
+        top_zarr_paths = [
+            "{}/{}".format(top_prefix, top_names[i]) for i in range(len(top_names))
+        ]
+        inside_whole_prefix = '/tmp/dp3_demo_combined_2_step_0/inside_whole_cgn_place_0101'
+        inside_whole_names = os.listdir(inside_whole_prefix)
+        inside_whole_zarr_paths = [
+            "{}/{}".format(inside_whole_prefix, inside_whole_names[i]) for i in range(len(inside_whole_names))
+        ]
+        inside_link_prefix = '/tmp/dp3_demo_combined_2_step_0/inside_link_cgn_place_0101'
+        inside_link_names = os.listdir(inside_link_prefix)
+        inside_link_zarr_paths = [
+            "{}/{}".format(inside_link_prefix, inside_link_names[i]) for i in range(len(inside_link_names))
+        ]
+        all_zarr_paths += top_zarr_paths + inside_whole_zarr_paths + inside_link_zarr_paths
+        top_grasp_prefix = '/tmp/dp3_demo_combined_2_step_0/top_cgn_grasp_0101_grasp_only'
+        top_grasp_names = os.listdir(top_grasp_prefix)
+        top_grasp_zarr_paths = [
+            "{}/{}".format(top_grasp_prefix, top_grasp_names[i]) for i in range(len(top_grasp_names))
+        ]
+        inside_whole_grasp_prefix = '/tmp/dp3_demo_combined_2_step_0/inside_whole_cgn_place_0101_grasp_only'
+        inside_whole_grasp_names = os.listdir(inside_whole_grasp_prefix)
+        inside_whole_grasp_zarr_paths = [
+            "{}/{}".format(inside_whole_grasp_prefix, inside_whole_grasp_names[i]) for i in range(len(inside_whole_grasp_names))
+        ]
+        inside_link_grasp_prefix = '/tmp/dp3_demo_combined_2_step_0/inside_link_cgn_place_0101_grasp_only'
+        inside_link_grasp_names = os.listdir(inside_link_grasp_prefix)
+        inside_link_grasp_zarr_paths = [
+            "{}/{}".format(inside_link_grasp_prefix, inside_link_grasp_names[i]) for i in range(len(inside_link_grasp_names))
+        ]
+        all_zarr_paths += top_grasp_zarr_paths + inside_whole_grasp_zarr_paths + inside_link_grasp_zarr_paths
+
     if zarr_path == 'grasp_open_close_pick_place':
         dataset_prefix = '/tmp/dp3_demo_combined_2_step_0/165-obj'
         all_zarr_paths_part_1 = ["{}/{}".format(dataset_prefix, globals()["save_data_name_{}".format(i)]) for i in range(246)]
@@ -262,11 +332,75 @@ def get_zarry_paths(zarr_path):
         object_other_categories_no_cam_rand = [x for x in all_subfolders if "1121-other-cat-no-cam-rand" in x]
         all_zarr_paths_part_2 = [f"{dataset_prefix}/{x}" for x in object_other_categories_no_cam_rand]
         all_zarr_paths = all_zarr_paths_part_1 + all_zarr_paths_part_2
-    
-    dataset_prefix = '/data/minon/dp3_demo_combined_2_step_0'
+    if zarr_path == 'open_close_grasp_pap':
+        dataset_prefix = '/scratch/chenyuah/dp3_demo_combined_2_step_0/165-obj'
+        all_zarr_paths_part_1 = ["{}/{}".format(dataset_prefix, globals()["save_data_name_{}".format(i)]) for i in range(246)]
+        all_subfolders = sorted(os.listdir(dataset_prefix))
+        object_other_categories_no_cam_rand = [x for x in all_subfolders if "1121-other-cat-no-cam-rand" in x]
+        all_zarr_paths_part_2 = [f"{dataset_prefix}/{x}" for x in object_other_categories_no_cam_rand]
+        all_zarr_paths_part_3 = articulated_new
+        all_zarr_paths_part_3 = ["{}/{}".format(dataset_prefix, name) for name in all_zarr_paths_part_3]
+        all_zarr_paths = all_zarr_paths_part_1 + all_zarr_paths_part_2 + all_zarr_paths_part_3
+        close_prefix = '/scratch/chenyuah/dp3_demo_combined_2_step_0/invert_push'
+        close_names = os.listdir(close_prefix)
+        close_obj_paths = [
+            "{}/{}".format(close_prefix, close_names[i]) for i in range(len(close_names))
+        ]
+        all_zarr_paths += close_obj_paths
+        grasp_prefix = '/scratch/chenyuah/dp3_demo_combined_2_step_0/grasp_0103'
+        grasp_names = os.listdir(grasp_prefix)
+        grasp_zarr_paths = [
+            "{}/{}".format(grasp_prefix, grasp_names[i]) for i in range(len(grasp_names))
+        ]
+        all_zarr_paths += grasp_zarr_paths
+        top_prefix = '/scratch/chenyuah/dp3_demo_combined_2_step_0/top_cgn_grasp_0101_grasp_only'
+        top_names = os.listdir(top_prefix)
+        top_zarr_paths = [
+            "{}/{}".format(top_prefix, top_names[i]) for i in range(len(top_names))
+        ]
+        top_prefix_2 = '/scratch/chenyuah/dp3_demo_combined_2_step_0/top_cgn_place_0101'
+        top_names_2 = os.listdir(top_prefix_2)
+        top_zarr_paths_2 = [
+            "{}/{}".format(top_prefix_2, top_names_2[i]) for i in range(len(top_names_2))
+        ]
+        all_zarr_paths += top_zarr_paths + top_zarr_paths_2
+        inside_link_prefix = '/scratch/chenyuah/dp3_demo_combined_2_step_0/inside_link_cgn_grasp_0101_grasp_only'
+        inside_link_names = os.listdir(inside_link_prefix)
+        inside_link_zarr_paths = [
+            "{}/{}".format(inside_link_prefix, inside_link_names[i]) for i in range(len(inside_link_names))
+        ]
+        inside_link_prefix_2 = '/scratch/chenyuah/dp3_demo_combined_2_step_0/inside_link_cgn_place_0101'
+        inside_link_names_2 = os.listdir(inside_link_prefix_2)
+        inside_link_zarr_paths_2 = [
+            "{}/{}".format(inside_link_prefix_2, inside_link_names_2[i]) for i in range(len(inside_link_names_2))
+        ]
+        inside_link_prefix_3 = '/scratch/chenyuah/dp3_demo_combined_2_step_0/inside_link_cgn_place_0103'
+        inside_link_names_3 = os.listdir(inside_link_prefix_3)
+        inside_link_zarr_paths_3 = [
+            "{}/{}".format(inside_link_prefix_3, inside_link_names_3[i]) for i in range(len(inside_link_names_3))
+        ]
+        all_zarr_paths += inside_link_zarr_paths + inside_link_zarr_paths_2 + inside_link_zarr_paths_3
+        inside_whole_prefix = '/scratch/chenyuah/dp3_demo_combined_2_step_0/inside_whole_cgn_grasp_0101_grasp_only'
+        inside_whole_names = os.listdir(inside_whole_prefix)
+        inside_whole_zarr_paths = [
+            "{}/{}".format(inside_whole_prefix, inside_whole_names[i]) for i in range(len(inside_whole_names))
+        ]
+        inside_whole_prefix_2 = '/scratch/chenyuah/dp3_demo_combined_2_step_0/inside_whole_cgn_place_0101'
+        inside_whole_names_2 = os.listdir(inside_whole_prefix_2)
+        inside_whole_zarr_paths_2 = [
+            "{}/{}".format(inside_whole_prefix_2, inside_whole_names_2[i]) for i in range(len(inside_whole_names_2))
+        ]
+        inside_whole_prefix_3 = '/scratch/chenyuah/dp3_demo_combined_2_step_0/inside_whole_cgn_place_0103'
+        inside_whole_names_3 = os.listdir(inside_whole_prefix_3)
+        inside_whole_zarr_paths_3 = [
+            "{}/{}".format(inside_whole_prefix_3, inside_whole_names_3[i]) for i in range(len(inside_whole_names_3))
+        ]
+        all_zarr_paths += inside_whole_zarr_paths + inside_whole_zarr_paths_2 + inside_whole_zarr_paths_3
+    dataset_prefix = '/scratch/chenyuah/dp3_demo_combined_2_step_0/165-obj'
     # dataset_prefix = '/scratch/yufeiw2/dp3_demo_combined_2_step_0'
     # dataset_prefix = '/local/'
-    
+    if zarr_path == '1_object_low_level':
+        all_zarr_paths = ["{}/{}".format(dataset_prefix, globals()["save_data_name_{}".format(i)]) for i in range(1)]
     if zarr_path == '10_object_low_level':
         all_zarr_paths = ["{}/{}".format(dataset_prefix, globals()["save_data_name_{}".format(i)]) for i in range(10)]
     if zarr_path == '50_object_low_level':
@@ -335,6 +469,25 @@ def get_zarry_paths(zarr_path):
     if zarr_path == '500_plus_normal_other_cat':
         pass
     
+    if os.path.exists(zarr_path):
+        if os.path.isdir(zarr_path):
+            subdirs = [
+                os.path.join(zarr_path, name)
+                for name in sorted(os.listdir(zarr_path))
+                if os.path.isdir(os.path.join(zarr_path, name))
+            ]
+            if len(subdirs) > 0:
+                all_zarr_paths = subdirs
+            else:
+                all_zarr_paths = [zarr_path]
+        else:
+            raise ValueError(f"zarr_path exists but is not a directory: {zarr_path}")
+    elif os.path.isdir(os.path.join(MIMICGEN_PREFIX, zarr_path)):
+        all_zarr_paths = [os.path.join(MIMICGEN_PREFIX, zarr_path)]
+
+    if 'all_zarr_paths' not in locals():
+        raise ValueError(f"Unsupported zarr_path: {zarr_path}")
+
     return all_zarr_paths
 
 class RobogenDataset(BaseDataset):
@@ -372,6 +525,7 @@ class RobogenDataset(BaseDataset):
             use_repr_10d=False, # 10D Representation for Low Level Policy
             pos_ori_imp=False, #10D Representation for High Level Policy
             dp3=False,
+            use_point_cloud_rgb=False,
             **kwargs
             ):
         super().__init__()
@@ -390,6 +544,7 @@ class RobogenDataset(BaseDataset):
         self.use_repr_10d=use_repr_10d
         self.pos_ori_imp=pos_ori_imp
         self.dp3 = dp3
+        self.use_point_cloud_rgb = use_point_cloud_rgb
 
         cprint(f"Using 10D representation {self.use_repr_10d}", "red")
         
@@ -406,6 +561,8 @@ class RobogenDataset(BaseDataset):
         else:
             cprint(f"specifying dataset_keys: {dataset_keys}", "red")
             keys = dataset_keys
+        if self.use_point_cloud_rgb and 'rgb_values' not in keys:
+            keys.append('rgb_values')
         
         self.keys_ = keys
         
@@ -463,11 +620,13 @@ class RobogenDataset(BaseDataset):
                     if len(os.listdir(os.path.join(zarr_path, subfolder))) > 10:
                         zarr_paths.append(os.path.join(zarr_path, subfolder))
                 all_paths += zarr_paths
-                folder_train_mask = np.zeros(num_load_episodes, dtype=bool)
-                folder_train_mask[:int(num_load_episodes*train_ratio)] = True
+                num_valid_episodes = len(zarr_paths)
+                folder_train_mask = np.zeros(num_valid_episodes, dtype=bool)
+                folder_train_mask[:int(num_valid_episodes*train_ratio)] = True
                 train_masks.append(folder_train_mask)
-                folder_val_mask = np.zeros(num_load_episodes, dtype=bool)
-                folder_val_mask[-int(num_load_episodes*val_ratio):] = True
+                folder_val_mask = np.zeros(num_valid_episodes, dtype=bool)
+                if int(num_valid_episodes*val_ratio) > 0:
+                    folder_val_mask[-int(num_valid_episodes*val_ratio):] = True
                 val_masks.append(folder_val_mask)
             
             if not self.kept_in_disk:
@@ -691,6 +850,10 @@ class RobogenDataset(BaseDataset):
 
         if self.augmentation_pcd:
             point_cloud = point_cloud + np.random.normal(0, 0.003, point_cloud.shape) # [AugTODO] add more 
+
+        if self.use_point_cloud_rgb and 'rgb_values' in sample:
+            rgb_values = copy.deepcopy(sample['rgb_values'][:,]).astype(np.float32)
+            point_cloud = np.concatenate([point_cloud, rgb_values], axis=-1)
             
         # if self.augmentation_goal_gripper_pcd:
         #     p = np.random.rand()
@@ -866,7 +1029,7 @@ class RobogenDataset(BaseDataset):
                 'cat_weights': cat_weights.astype(np.float32)
             }
             for key in self.keys_:
-                if key not in ['state', 'action', 'point_cloud', 'gripper_pcd', 'goal_gripper_pcd']:
+                if key not in ['state', 'action', 'point_cloud', 'gripper_pcd', 'goal_gripper_pcd', 'rgb_values']:
                     data['obs'][key] = copy.deepcopy(sample[key][:,].astype(np.float32))
                     
         elif self.pos_ori_imp:
@@ -884,7 +1047,7 @@ class RobogenDataset(BaseDataset):
                 'cat_weights': cat_weights.astype(np.float32)
             }
             for key in self.keys_:
-                if key not in ['state', 'action', 'point_cloud', 'gripper_pcd', 'goal_gripper_pcd', 'displacement_gripper_to_object']:
+                if key not in ['state', 'action', 'point_cloud', 'gripper_pcd', 'goal_gripper_pcd', 'displacement_gripper_to_object', 'rgb_values']:
                     data['obs'][key] = copy.deepcopy(sample[key][:,].astype(np.float32))[:self.horizon,:,:]
         else:
             # assign to dict
@@ -909,7 +1072,7 @@ class RobogenDataset(BaseDataset):
             #     if 'displacement_gripper_to_object' in self.observation_mode:
             #         data['obs']['displacement_gripper_to_object'] = displacement_gripper_to_object.astype(np.float32)
             for key in self.keys_:
-                if key not in ['state', 'action', 'point_cloud']:
+                if key not in ['state', 'action', 'point_cloud', 'rgb_values']:
                     data['obs'][key] = copy.deepcopy(sample[key][:,].astype(np.float32))
                 
         if self.prediction_target == 'delta_to_goal_gripper':

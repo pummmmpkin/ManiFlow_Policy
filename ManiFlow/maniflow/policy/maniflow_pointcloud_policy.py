@@ -14,6 +14,23 @@ from maniflow.model.diffusion.dit import DiT
 from maniflow.model.diffusion.ditx import DiTX
 from maniflow.model.common.sample_util import *
 
+
+def _load_siglip_text_features(siglip_text_features_path):
+    siglip_text_features = torch.load(siglip_text_features_path, map_location="cpu")
+    if isinstance(siglip_text_features, dict):
+        if "values" not in siglip_text_features:
+            raise KeyError(
+                f"SigLIP feature file {siglip_text_features_path} is a dict but does not contain "
+                "the required 'values' key."
+            )
+        siglip_text_features = siglip_text_features["values"]
+    if not torch.is_tensor(siglip_text_features):
+        raise TypeError(
+            f"SigLIP features loaded from {siglip_text_features_path} must be a tensor, got "
+            f"{type(siglip_text_features)}."
+        )
+    return siglip_text_features
+
 class ManiFlowTransformerPointcloudPolicy(BasePolicy):
     def __init__(self, 
             shape_meta: dict,
@@ -48,7 +65,9 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
             sample_t_mode_consistency="discrete",
             sample_dt_mode_consistency="uniform", 
             sample_target_t_mode="relative", # relative, absolute
-            siglip_embedding=True,
+            siglip_embedding=False,
+            siglip_text_features_path=None,
+            fixed_cat_idx=None,
             **kwargs):
         super().__init__()
 
@@ -132,9 +151,11 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
                 language_conditioned=language_conditioned,
             )
         if siglip_embedding:
+            if siglip_text_features_path is None:
+                siglip_text_features_path = "/project_data/held/chenyuah/smith/RoboGen-sim2real/siglip/features/siglip_text_features_w_pick_and_place.pt"
             self.register_buffer(
                 "siglip_text_features",
-                torch.load("/data/robogen/sim_chenyuan/ManiFlow_Policy/siglip_text_features.pt")
+                _load_siglip_text_features(siglip_text_features_path)
             )
         self.obs_encoder = obs_encoder
         self.model = model
@@ -159,6 +180,7 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         self.sample_dt_mode_consistency = sample_dt_mode_consistency
         self.sample_target_t_mode = sample_target_t_mode
         self.siglip_embedding = siglip_embedding
+        self.fixed_cat_idx = None if fixed_cat_idx is None else int(fixed_cat_idx)
         assert self.sample_target_t_mode in ["absolute", "relative"], "sample_target_t_mode must be either 'absolute' or 'relative'"
 
         cprint(f"[ManiFlowTransformerPointcloudPolicy] Initialized with parameters:", "yellow")
@@ -229,13 +251,26 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
         if self.language_conditioned:
             if self.siglip_embedding:
                 assert cat_idx is not None, "cat_idx must be provided when using siglip_embedding"
+                if self.fixed_cat_idx is not None:
+                    batch_size = nobs['point_cloud'].shape[0]
+                    cat_idx = torch.full(
+                        (batch_size,),
+                        self.fixed_cat_idx,
+                        device=nobs['point_cloud'].device,
+                        dtype=torch.long,
+                    )
                 lang_cond = self.siglip_text_features[cat_idx]
                 if lang_cond.ndim == 1:
                     lang_cond = lang_cond.unsqueeze(0)
             # assume nobs has 'task_name' key for language condition
             elif lang_cond is None:
-                lang_cond = nobs.get('task_name', None)
-                assert lang_cond is not None, "Language goal is required"
+                if self.fixed_cat_idx is not None:
+                    from maniflow.dataset.robogen_dataset import all_task_names
+                    batch_size = nobs['point_cloud'].shape[0]
+                    lang_cond = [all_task_names[self.fixed_cat_idx]] * batch_size
+                else:
+                    lang_cond = nobs.get('task_name', None)
+                    assert lang_cond is not None, "Language goal is required"
         
         # condition through visual feature
         this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]).to(device))
@@ -528,11 +563,18 @@ class ManiFlowTransformerPointcloudPolicy(BasePolicy):
             if self.siglip_embedding:
                 assert 'cat_idx' in batch, "cat_idx must be provided in the batch when using siglip_embedding"
                 cat_idx = batch['cat_idx'].squeeze(-1)
+                if self.fixed_cat_idx is not None:
+                    cat_idx = torch.full_like(cat_idx, self.fixed_cat_idx)
                 lang_cond = self.siglip_text_features[cat_idx]      
             # we assume language condition is passed as 'task_name'
             else:
-                lang_cond = nobs.get('task_name', None)
-                assert lang_cond is not None, "Language goal is required"
+                if self.fixed_cat_idx is not None:
+                    from maniflow.dataset.robogen_dataset import all_task_names
+                    batch_size = nobs['point_cloud'].shape[0]
+                    lang_cond = [all_task_names[self.fixed_cat_idx]] * batch_size
+                else:
+                    lang_cond = nobs.get('task_name', None)
+                    assert lang_cond is not None, "Language goal is required"
 
         # reshape B, T, ... to B*T
         this_nobs = dict_apply(nobs, 

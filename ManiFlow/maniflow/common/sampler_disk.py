@@ -4,7 +4,7 @@ import numba
 from maniflow.common.replay_buffer_disk import ReplayBuffer
 
 categories = ['bucket', 'faucet', 'foldingchair', 'laptop', 'stapler', 'toilet']
-num_categories = 15
+num_categories = 22
 
 @numba.jit(nopython=True)
 def create_indices(

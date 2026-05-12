@@ -13,6 +13,44 @@ import pickle
 from tqdm import tqdm
 
 categories = ['bucket', 'faucet', 'foldingchair', 'laptop', 'stapler', 'toilet']
+MIMICGEN_CATEGORY_TO_IDX = {
+    'square_d2_correct': 15,
+    'square_d2': 15,
+    'threading_d2': 16,
+    'threepieceassembly_d2': 17,
+    'three_piece_assembly_d2': 17,
+    'stackthree_d1': 18,
+    'stack_three_d1': 18,
+    'stack_three_d1_color': 18,
+    'stack_d1': 19,
+    'square_d0': 20,
+    'coffee_d2': 21,
+}
+
+
+def infer_cat_idx_from_path(zarr_path):
+    for name, idx in MIMICGEN_CATEGORY_TO_IDX.items():
+        if name in zarr_path:
+            return idx
+
+    cat_idx = 0
+    for i, cat in enumerate(categories):
+        if cat in zarr_path:
+            cat_idx = i + 1
+            break
+    if 'invert' in zarr_path:
+        if cat_idx == 0:
+            cat_idx = 7
+        else:
+            cat_idx += 5
+    if cat_idx == 0:
+        if 'grasp' in zarr_path:
+            cat_idx = 12
+        if 'top' in zarr_path:
+            cat_idx = 13
+        if 'inside' in zarr_path:
+            cat_idx = 14
+    return cat_idx
 
 class WelfordOnlineStatistics:
     def __init__(self):
@@ -115,23 +153,7 @@ class ReplayBuffer:
             agent_pos_welford = WelfordOnlineStatistics()
 
         for idx, zarr_path  in enumerate(tqdm(path_list)):
-            cat_idx = 0
-            for i, cat in enumerate(categories):
-                if cat in zarr_path:
-                    cat_idx = i + 1
-                    break
-            if 'invert' in zarr_path:
-                if cat_idx == 0:
-                    cat_idx = 7
-                else:
-                    cat_idx += 5
-            if cat_idx == 0:
-                if 'grasp' in zarr_path:
-                    cat_idx = 12
-                if 'top' in zarr_path:
-                    cat_idx = 13
-                if 'inside' in zarr_path:
-                    cat_idx = 14
+            cat_idx = infer_cat_idx_from_path(zarr_path)
 
             if not load_per_step:
                 if is_pickle:
@@ -227,14 +249,17 @@ class ReplayBuffer:
                             
                             agent_pos_welford.add(agent_pos)
                             
-                else:         
-                    all_substeps = os.listdir(zarr_path)
-                    all_substeps = sorted(all_substeps, key=lambda x: int(x))
+                else:
+                    all_substeps = [f for f in os.listdir(zarr_path) if f.isdigit() or f.endswith('.npz')]
+                    all_substeps = sorted(all_substeps, key=lambda x: int(os.path.splitext(x)[0]))
                     for i, substep in enumerate(all_substeps):
                         substep_path = os.path.join(zarr_path, substep)
-                        group = zarr.open(substep_path, 'r')
-                        src_store = group.store
-                        src_root = zarr.group(src_store)
+                        if substep.endswith('.npz'):
+                            src_root = {'data': np.load(substep_path, allow_pickle=True)}
+                        else:
+                            group = zarr.open(substep_path, 'r')
+                            src_store = group.store
+                            src_root = zarr.group(src_store)
 
                         if keys is None:
                             keys = src_root['data'].keys()
@@ -336,12 +361,16 @@ class ReplayBuffer:
                 for key in self.keys_:
                     ret_data[key].append(data[key][:])
             else:
-                step_path = os.path.join(zarr_path, str(step_idx))
-                group = zarr.open(step_path, 'r')
-                src_store = group.store
+                npz_step_path = os.path.join(zarr_path, f'{step_idx}.npz')
+                if os.path.exists(npz_step_path):
+                    src_root = {'data': np.load(npz_step_path, allow_pickle=True)}
+                else:
+                    step_path = os.path.join(zarr_path, str(step_idx))
+                    group = zarr.open(step_path, 'r')
+                    src_store = group.store
 
-                # numpy backend
-                src_root = zarr.group(src_store)
+                    # numpy backend
+                    src_root = zarr.group(src_store)
                 for key in self.keys_:
                     ret_data[key].append(src_root['data'][key][:])
         

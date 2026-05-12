@@ -6,6 +6,7 @@ name: train_maniflow_pointcloud_policy
 task_name: ${task.name}
 shape_meta: ${task.shape_meta}
 exp_name: "debug"
+load_policy_path: null
 
 horizon: 4
 n_obs_steps: 2
@@ -21,12 +22,15 @@ policy:
   n_layer: 12  # max 28
   n_head: 8  # max 16
   n_emb: 768 # max 1152
-  visual_cond_len: 64 # adjust according to the task
+  visual_cond_len: 128 # adjust according to the task
   max_lang_cond_len: 1024 # maximum length of language tokens
   qkv_bias: true
   qk_norm: true
   
   language_conditioned: false
+  siglip_embedding: false
+  siglip_text_features_path: null
+  fixed_cat_idx: null
   pre_norm_modality: false
 
   flow_batch_ratio: 0.75 
@@ -104,6 +108,7 @@ training:
   seed: 42
   debug: False
   resume: True
+  use_dataset_normalization: True
   lr_scheduler: cosine
   lr_warmup_steps: 500
   num_epochs: 3010

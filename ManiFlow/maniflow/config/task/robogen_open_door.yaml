@@ -86,3 +86,4 @@ dataset:
   use_repr_10d: false
   pos_ori_imp: false
   dp3: false
+  use_point_cloud_rgb: false
